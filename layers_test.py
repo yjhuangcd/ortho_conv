@@ -62,7 +62,7 @@ def cayley(W):
 class CayleyConv(StridedConv, nn.Conv2d):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.register_parameter('alpha', None)
+        self.alpha = nn.Parameter(torch.tensor(0.))
 
     def fft_shift_matrix(self, n, s):
         shift = torch.arange(0, n).repeat((n, 1))
@@ -77,8 +77,6 @@ class CayleyConv(StridedConv, nn.Conv2d):
             self.shift_matrix = self.fft_shift_matrix(n, -s)[:, :(n//2 + 1)].reshape(n * (n // 2 + 1), 1, 1).to(x.device)
         xfft = torch.fft.rfft2(x).permute(2, 3, 1, 0).reshape(n * (n // 2 + 1), cin, batches)
         wfft = self.shift_matrix * torch.fft.rfft2(self.weight, (n, n)).reshape(cout, cin, n * (n // 2 + 1)).permute(2, 0, 1).conj()
-        if self.alpha is None:
-            self.alpha = nn.Parameter(torch.tensor(wfft.norm().item(), requires_grad=True).to(x.device))
         yfft = (cayley(self.alpha * wfft / wfft.norm()) @ xfft).reshape(n, n // 2 + 1, cout, batches)
         y = torch.fft.irfft2(yfft.permute(3, 2, 0, 1))
         if self.bias is not None:
@@ -128,13 +126,6 @@ class GroupSort(nn.Module):
     def forward(self, x):
         a, b = x.split(x.size(1) // 2, 1)
         a, b = torch.max(a, b), torch.min(a, b)
-        return torch.cat([a, b], dim=1)
-
-class GroupSortTest(nn.Module):
-    # rewrite groupsort to crown supported ops
-    def forward(self, x):
-        a, b = x.split(x.size(1) // 2, 1)
-        a, b = F.relu(a-b) + b, -(F.relu(-a+b) - b)
         return torch.cat([a, b], dim=1)
     
 class ConvexCombo(nn.Module):

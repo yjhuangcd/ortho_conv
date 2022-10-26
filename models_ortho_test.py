@@ -1,61 +1,58 @@
-from layers import *
+from layers_test import *
 
-class KWLarge(nn.Module):
-    def __init__(self, conv=CayleyConv, linear=CayleyLinear, w=1):
+class KWLarge_Concat(nn.Module):
+    # param_map for concatenating [h(x), eta]
+    def __init__(self, conv=CayleyConv, linear=CayleyLinear, w=1, out_dim=128, act='GroupSort'):
         super().__init__()
+        self.out_dim = out_dim
+        if act == 'GroupSort':
+            self.act = GroupSort()
+        elif act == 'ReLU':
+            self.act = nn.ReLU()
         self.model = nn.Sequential(
-            conv(3, 32 * w, 3), GroupSort(),
-            conv(32 * w, 32 * w, 3, stride=2), GroupSort(),
-            conv(32 * w, 64 * w, 3), GroupSort(),
-            conv(64 * w, 64 * w, 3, stride=2), GroupSort(),
+            conv(3, 32 * w, 3), self.act,
+            conv(32 * w, 32 * w, 3, stride=2), self.act,
+            conv(32 * w, 64 * w, 3), self.act,
+            conv(64 * w, 64 * w, 3, stride=2), self.act,
             nn.Flatten(),
-            linear(4096 * w, 512 * w), GroupSort(),
-            linear(512 * w, 512), GroupSort(),
-            linear(512, 10)
+            linear(4096 * w, 512 * w), self.act,
+            linear(512 * w, 512), self.act
         )
+        # project x to out_dim to concatenate with eta
+        if out_dim < 512:
+            self.fc = linear(512, out_dim)
     def forward(self, x):
-        return self.model(x)
-    
-class ResNet9(nn.Module):
-    def __init__(self, conv=CayleyConv, linear=CayleyLinear):
-        super().__init__()
-        self.block1 = nn.Sequential(
-            conv(3, 64, 3), GroupSort(),
-            conv(64, 128, 3), GroupSort(),
-            nn.AvgPool2d(2, divisor_override=2)
-        )
-        self.res1 = nn.Sequential(
-            conv(128, 128, 3), GroupSort(),
-            conv(128, 128, 3), GroupSort()
-        )
-        self.combo1 = ConvexCombo()
-        self.block2 = nn.Sequential(
-            conv(128, 256, 3), GroupSort(),
-            nn.AvgPool2d(2, divisor_override=2),
-            conv(256, 512, 3), GroupSort(),
-            nn.AvgPool2d(2, divisor_override=2)
-        )
-        self.res2 = nn.Sequential(
-            conv(512, 512, 3), GroupSort(),
-            conv(512, 512, 3), GroupSort()
-        )
-        self.combo2 = ConvexCombo()
-        self.linear1 = nn.Sequential(
-            nn.AvgPool2d(2, divisor_override=2),
-            nn.Flatten(),
-            linear(2048, 512), GroupSort(),
-            linear(512, 10)
-        )
+        if self.out_dim < 512:
+            return self.fc(self.model(x))
+        else:
+            return self.model(x)
 
+class KWLargeMNIST_Concat(nn.Module):
+    # param_map for concatenating [h(x), eta]
+    def __init__(self, conv=CayleyConv, linear=CayleyLinear, w=1, out_dim=128, act='GroupSort'):
+        super().__init__()
+        self.out_dim = out_dim
+        if act == 'GroupSort':
+            self.act = GroupSort()
+        elif act == 'ReLU':
+            self.act = nn.ReLU()
+        self.model = nn.Sequential(
+            conv(1, 32 * w, 3, stride=1, padding=1), self.act,
+            conv(32 * w, 32 * w, 3, stride=2), self.act,
+            conv(32 * w, 64 * w, 3, stride=1, padding=1), self.act,
+            conv(64 * w, 64 * w, 3, stride=2), self.act,
+            nn.Flatten(),
+            linear(2688 * w, 512 * w), self.act,
+            linear(512 * w, 512), self.act
+        )
+        # project x to out_dim to concatenate with eta
+        if out_dim < 512:
+            self.fc = linear(512, out_dim)
     def forward(self, x):
-        x = self.block1(x)
-        res = self.res1(x)
-        x = self.combo1(x, res)
-        x = self.block2(x)
-        res = self.res2(x)
-        x = self.combo2(x, res)
-        x = self.linear1(x)
-        return x
+        if self.out_dim < 512:
+            return self.fc(self.model(x))
+        else:
+            return self.model(x)
 
 class PooledConv(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False, conv=CayleyConv):
@@ -79,14 +76,14 @@ class BasicBlock(nn.Module):
         super(BasicBlock, self).__init__()
         self.relu1 = GroupSort()
         self.conv1 = PooledConv(in_planes, out_planes, kernel_size=3, stride=stride,
-                               padding=1, bias=True, conv=conv)
+                                padding=1, bias=True, conv=conv)
         self.relu2 = GroupSort()
         self.conv2 = PooledConv(out_planes, out_planes, kernel_size=3, stride=1,
-                               padding=1, bias=True, conv=conv)
+                                padding=1, bias=True, conv=conv)
         self.droprate = dropRate
         self.equalInOut = (in_planes == out_planes)
         self.convShortcut = (not self.equalInOut) and PooledConv(in_planes, out_planes, kernel_size=3, stride=stride,
-                               padding=0, bias=True, conv=conv) or None
+                                                                 padding=0, bias=True, conv=conv) or None
         self.a1 = nn.Parameter(torch.Tensor([0.0]))
 
     def forward(self, x):
@@ -99,7 +96,7 @@ class BasicBlock(nn.Module):
             out = F.dropout(out, p=self.droprate, training=self.training)
         out = self.conv2(out)
         return torch.add(torch.sigmoid(self.a1) * (x if self.equalInOut else self.convShortcut(x)),
-                (1.0 - torch.sigmoid(self.a1)) * out)
+                         (1.0 - torch.sigmoid(self.a1)) * out)
 
 class NetworkBlock(nn.Module):
     def __init__(self, nb_layers, in_planes, out_planes, block, stride, dropRate=0.0, conv=CayleyConv):
@@ -116,14 +113,14 @@ class NetworkBlock(nn.Module):
 
 class WideResNet(nn.Module):
     # WideResNet10-10 by default
-    def __init__(self, depth=10, num_classes=10, widen_factor=10, dropRate=0.0, conv=CayleyConv, linear=CayleyLinear):
+    def __init__(self, num_classes, depth=10, widen_factor=10, dropRate=0.0, conv=CayleyConv, linear=CayleyLinear):
         super(WideResNet, self).__init__()
         nChannels = [16, 16*widen_factor, 32*widen_factor, 64*widen_factor]
         assert((depth - 4) % 6 == 0)
         n = (depth - 4) / 6
         block = BasicBlock
         self.conv1 = PooledConv(3, nChannels[0], kernel_size=3, stride=1,
-                               padding=1, bias=True, conv=conv)
+                                padding=1, bias=True, conv=conv)
         self.block1 = NetworkBlock(n, nChannels[0], nChannels[1], block, 1, dropRate, conv)
         self.block2 = NetworkBlock(n, nChannels[1], nChannels[2], block, 2, dropRate, conv)
         self.block3 = NetworkBlock(n, nChannels[2], nChannels[3], block, 2, dropRate, conv)
